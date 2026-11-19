@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>New Tab</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- Background layers -->
+  <div id="bg" class="bg"></div>
+  <div class="bg-overlay"></div>
+
+  <!-- Top-left live weather (Lisbon) -->
+  <div id="weather" class="weather" aria-live="polite"></div>
+
+  <!-- Top-right photo credit -->
+  <a id="credit" class="credit" href="https://unsplash.com/" target="_blank" rel="noopener">
+    Photo via Unsplash
+  </a>
+
+  <!-- Top-center: next German public holiday countdown -->
+  <div id="countdown" class="countdown" aria-live="polite"></div>
+
+  <!-- Center: clock + greeting + quote + search -->
+  <main class="center">
+    <div id="clock" class="clock">--:--</div>
+    <div id="greeting" class="greeting">Hello</div>
+    <div id="quote" class="quote" aria-live="polite"></div>
+    <form id="search-form" class="search" role="search">
+      <input
+        id="search-input"
+        class="search-input"
+        type="text"
+        placeholder="Search the web…"
+        autocomplete="off"
+        aria-label="Search the web"
+      />
+    </form>
+  </main>
+
+  <!-- Notes scratchpad (bottom-left) -->
+  <section id="notes" class="notes is-collapsed">
+    <header class="notes__header">
+      <h2 class="notes__title">Notes</h2>
+      <button id="notes-toggle" class="notes__toggle" title="Show / hide" aria-label="Show or hide notes">+</button>
+    </header>
+    <div class="notes__body">
+      <textarea
+        id="notes-text"
+        class="notes-text"
+        placeholder="Jot anything down…"
+        aria-label="Notes"
+      ></textarea>
+    </div>
+  </section>
+
+  <!-- Priorities card (bottom-right) -->
+  <section id="priorities" class="priorities">
+    <header class="priorities__header">
+      <h2 class="priorities__title">Priorities</h2>
+      <span id="priorities-count" class="priorities__count"></span>
+      <button id="priorities-toggle" class="priorities__toggle" title="Show / hide" aria-label="Show or hide priorities">–</button>
+    </header>
+
+    <div id="priorities-body" class="priorities__body">
+      <form id="priority-form" class="priority-form">
+        <input
+          id="priority-input"
+          class="priority-input"
+          type="text"
+          placeholder="What matters today?"
+          autocomplete="off"
+          maxlength="140"
+        />
+      </form>
+
+      <ul id="priority-list" class="priority-list"></ul>
+
+      <footer class="priorities__footer">
+        <span id="priorities-empty" class="priorities__empty">No priorities yet — add your first one above.</span>
+        <button id="clear-done" class="clear-done" hidden>Clear completed</button>
+      </footer>
+    </div>
+  </section>
+
+  <script src="js/backgrounds.js"></script>
+  <script src="js/weather.js"></script>
+  <script src="js/quotes.js"></script>
+  <script src="js/holidays.js"></script>
+  <script src="js/notes.js"></script>
+  <script src="js/newtab.js"></script>
+</body>
+</html>

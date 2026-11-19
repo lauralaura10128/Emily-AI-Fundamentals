@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local environment / secrets — never commit your Supabase service_role key
+.env
+*.env
+secrets.*
