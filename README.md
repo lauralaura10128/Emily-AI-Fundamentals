@@ -213,10 +213,11 @@ The hardest habit to learn was resisting the first fix. The duplicate rows in
 Each project README has a full **Limitations and assistance** section listing what is
 incomplete in that project. In summary:
 
-- **get-books** — the explorer's Category and Minimum-stock filters are built but have
-  no backing columns in the schema yet; the `--details` fields are scraped but not
-  stored; the explorer loads the whole table and filters client-side; the generic
-  scraper handles static HTML only.
+- **get-books** — the committed `schema.sql`, `books.csv` and scraper don't match the
+  live Supabase table, which has `category` and `num_available` columns they lack, so
+  a fresh clone can't reproduce the database the explorer expects; several `--details`
+  fields are scraped but never uploaded; the explorer loads the whole table and
+  filters client-side; the generic scraper handles static HTML only.
 - **my-monomentum** — the weather location is hard-coded to Lisbon; only
   Germany-wide holidays are covered; backgrounds come from a fixed list; there's no
   settings page and no automated tests.

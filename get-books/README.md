@@ -63,9 +63,11 @@ Two layers, deliberately:
 | `data/books.csv` | A flat snapshot of the scrape | A checkpoint. Scraping and loading are separate steps, so a parsing mistake in the loader doesn't mean re-crawling 1,000 pages — and the CSV is a readable artefact of what was actually collected. |
 | Supabase (Postgres) `books` table | The queryable copy the web explorer reads | A CSV can't be filtered from a browser. Putting the rows in Postgres means the UI can query, sort and filter server-side over HTTP with no backend of my own to host. |
 
-The table (`supabase/schema.sql`) stores `title`, `price_gbp`, `availability`,
-`rating`, `detail_url`, `image_url` and a `scraped_at` timestamp, with indexes on
-price and rating for sorting.
+The table stores `title`, `price_gbp`, `availability`, `rating`, `detail_url`,
+`image_url` and a `scraped_at` timestamp, with indexes on price and rating for
+sorting. The live table additionally carries `category` and `num_available`, which the
+explorer filters on — note that `supabase/schema.sql` in this repo does not yet define
+those two columns (see Limitations).
 
 `detail_url` is `unique` and used as the upsert key, so re-running the scrape
 **updates** existing books instead of duplicating them — the table can be refreshed
@@ -80,8 +82,7 @@ Security with a read-only policy.
 
 Open `index.html` in a browser. It fetches the `books` table and gives you:
 
-- **Category** and **minimum stock** filters (see Limitations — these need schema
-  columns that aren't populated yet)
+- **Category** (50 categories) and **minimum stock** filters
 - **Minimum rating** (1–5 stars)
 - **Price range** in £
 - **Title search**, **sorting**, and a **"Top picks"** row of the highest-rated books
@@ -172,14 +173,17 @@ browser a key that can't do damage."
 
 **Incomplete features**
 
-- **The Category and Minimum-stock filters don't work yet.** The explorer has UI for
-  both, but neither the CSV nor `schema.sql` has a `category` or `num_available`
-  column, so there's nothing to filter on. Category would need to be captured while
-  crawling (it's only visible from the sidebar nav, not the product card), and stock
-  counts only come from `--details`.
-- **`--details` data is collected but never stored.** The scraper can pull UPC,
-  product type, tax, stock count and description, but `schema.sql` and `upload.py`
-  only handle the six listing columns, so those fields stay in the CSV.
+- **The committed code can't reproduce the live database.** The live Supabase table
+  has `category` and `num_available` columns, and the explorer filters on both — but
+  `schema.sql` doesn't define them, `data/books.csv` doesn't contain them, and
+  `books_scraper.py` never captures `category` at all (it appears only in the sidebar
+  navigation, not on the product card). So cloning this repo and following the setup
+  steps produces a narrower table than the explorer expects, and those two filters
+  come up empty. Realigning the scraper, the CSV and the schema with the live table is
+  the main outstanding task.
+- **`--details` data is only partly stored.** The scraper can pull UPC, product type,
+  tax, stock count and description, but `upload.py` sends only the six listing
+  columns, so UPC, product type, tax and description never reach the database.
 - **The explorer loads the whole table at once** (up to 2,000 rows) and filters in the
   browser. That is fine for 1,000 books and would need real server-side pagination for
   a larger table.
