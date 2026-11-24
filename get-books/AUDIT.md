@@ -48,19 +48,33 @@ was tested against the live API rather than assumed:
 | `GET` on eight common table names (`users`, `profiles`, `orders`, …) | 404 | No other table is reachable |
 | `POST` with a NOT NULL violation | `42501 — new row violates row-level security policy` | **Inserts are blocked** |
 | `PATCH` on an existing row, writing its current value back | 0 rows affected | **Updates are blocked** (RLS filtered the row out) |
-| `DELETE` | not tested | Cannot be tested without destroying a row — see below |
+| `DELETE` | not probed | Cannot be probed without destroying a row — resolved by policy inspection instead (below) |
 
 The probes were built so they could not alter data: the insert violated a NOT NULL
 constraint, and the update wrote a value identical to the existing one. Row count and
 contents were verified unchanged before and after.
 
-**Not proven: `DELETE`.** Under RLS, `UPDATE` and `DELETE` are filtered by row rather
-than rejected outright, so a delete request that matches no rows returns success
-whether or not a policy permits it. Proving it would require deleting a real row.
-Given that inserts and updates are both blocked, deletes are very likely blocked by
-the same read-only policy — but this remains **inferred, not verified**. The
-definitive check is Supabase -> Authentication -> Policies -> `books`, which lists the
-commands each policy covers.
+**`DELETE` could not be probed**, because under RLS `UPDATE` and `DELETE` are filtered
+by row rather than rejected outright: a delete matching no rows returns success
+whether or not a policy permits it, and proving it by probe would mean deleting a real
+row. It was resolved by inspecting the policies directly instead:
+
+```sql
+select policyname, cmd, roles, qual, with_check
+  from pg_policies where schemaname = 'public' and tablename = 'books';
+select relname, relrowsecurity from pg_class where relname = 'books';
+```
+
+Row Level Security is **enabled** on the table, and exactly **one** policy exists:
+
+| policyname | cmd | roles | qual | with_check |
+| --- | --- | --- | --- | --- |
+| Public read access | `SELECT` | `anon`, `authenticated` | `true` | null |
+
+With RLS enabled, any command without a permissive policy is denied. There is no
+`INSERT`, `UPDATE`, `DELETE` or `ALL` policy, so all three are refused for anonymous
+callers — consistent with the probe results above. **The committed publishable key
+grants read access to this table and nothing else.**
 
 ### Repository hygiene — clean
 
@@ -85,9 +99,10 @@ commands each policy covers.
   is a read-only browser key, but if the table's RLS policy is ever loosened, the key
   must be rotated in the Supabase dashboard — removing it from history later would not
   help, since it is already published.
-- **`DELETE` permission is unverified.** It could not be proven by probe without
-  destroying a row, and the policy list in the Supabase dashboard has not been
-  inspected. This is the one open security question in this audit.
+- **The policy was correct at the time of this audit.** Read-only access was verified
+  both by probing the API and by reading `pg_policies` directly. If a write policy is
+  ever added to this table, the published key would immediately gain that access and
+  would need rotating.
 - **The audit covers this repository only.** It cannot tell whether a copy of the
   secret key exists elsewhere — in a shell history, an environment file outside the
   repository, or the Supabase dashboard.
