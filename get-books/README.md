@@ -27,7 +27,7 @@ supabase/
   schema.sql          # Table definition for the books table
   upload.py           # Loads the CSV into Supabase via the REST API
 data/
-  books.csv           # Snapshot of the scraped data
+  books.csv           # Snapshot of the scraped data; also the explorer's offline fallback
 docs/
   explorer.png        # Screenshot of the explorer
 ```
@@ -40,16 +40,20 @@ permitted and intended.
 
 `scraper/books_scraper.py` collects it with `requests` + `BeautifulSoup`:
 
-- Starts at the catalogue root and follows the `li.next a` link from page to page
-  until there is no next link — 50 pages, ~1,000 books. It follows the site's own
-  links rather than guessing URL patterns, so it stops naturally at the end.
+- Reads the 50 category links from the sidebar, then crawls each category in turn,
+  following its `li.next a` links until there is no next page. Crawling by category
+  rather than through the flat catalogue means **every row knows its category**,
+  which the table and the explorer both filter on — and it costs no extra requests,
+  since the same 1,000 books are spread over the same listing pages either way.
 - For each `article.product_pod` it reads title, price, availability, star rating,
   the detail-page URL and the cover image URL.
 - `--details` additionally opens each book's own page for UPC, product type, tax,
   exact stock count and description. That's ~1,000 extra requests, so it is off by
-  default.
-- Requests are polite and resilient: a 0.5 s pause between requests, a descriptive
-  User-Agent, and three retries with exponential backoff, treating 404 as final.
+  default — but `num_available`, which the explorer's minimum-stock filter uses, only
+  comes from those pages, so reproducing the full table needs it.
+- Requests are polite and resilient: a 0.5 s pause between requests (`--delay` to
+  change it), a descriptive User-Agent, and three retries with exponential backoff,
+  treating 404 as final.
 
 Output is one CSV row per book, written as `utf-8-sig` so the `£` prices survive
 being opened in Excel.
@@ -60,14 +64,17 @@ Two layers, deliberately:
 
 | Where | What | Why |
 | --- | --- | --- |
-| `data/books.csv` | A flat snapshot of the scrape | A checkpoint. Scraping and loading are separate steps, so a parsing mistake in the loader doesn't mean re-crawling 1,000 pages — and the CSV is a readable artefact of what was actually collected. |
+| `data/books.csv` | A flat snapshot of the scrape, with the same columns as the table | Two jobs. It's a checkpoint — scraping and loading are separate steps, so a parsing mistake in the loader doesn't mean re-crawling 1,000 pages. It's also the explorer's **offline fallback** (below). Running with `--details` produces four further columns (UPC, product type, tax, description) that the table doesn't store, so they aren't kept in this snapshot. |
 | Supabase (Postgres) `books` table | The queryable copy the web explorer reads | A CSV can't be filtered from a browser. Putting the rows in Postgres means the UI can query, sort and filter server-side over HTTP with no backend of my own to host. |
 
-The table stores `title`, `price_gbp`, `availability`, `rating`, `detail_url`,
-`image_url` and a `scraped_at` timestamp, with indexes on price and rating for
-sorting. The live table additionally carries `category` and `num_available`, which the
-explorer filters on — note that `supabase/schema.sql` in this repo does not yet define
-those two columns (see Limitations).
+The table stores `title`, `category`, `price_gbp`, `availability`, `rating`,
+`num_available`, `detail_url`, `image_url` and a `scraped_at` timestamp, with indexes
+on price, rating and category.
+
+**If Supabase is unreachable, the explorer falls back to `data/books.csv`** and
+renders the same page, labelled "offline snapshot" rather than "live". The free
+Supabase tier pauses a project after a period of inactivity, which would otherwise
+leave the page blank; the committed snapshot means it always works.
 
 `detail_url` is `unique` and used as the upsert key, so re-running the scrape
 **updates** existing books instead of duplicating them — the table can be refreshed
@@ -88,7 +95,9 @@ Open `index.html` in a browser. It fetches the `books` table and gives you:
 - **Title search**, **sorting**, and a **"Top picks"** row of the highest-rated books
 
 Filtering is instant because the rows are already in the page — there's no reload and
-no server round trip per keystroke.
+no server round trip per keystroke. The status dot in the filter bar says where the
+data came from: **live** when it is reading Supabase, **offline snapshot** when it has
+fallen back to the committed CSV.
 
 Because the file is named `index.html`, it can also be served as a live site via
 **GitHub Pages** (Settings → Pages → Build from branch → `main` / root).
@@ -102,9 +111,13 @@ dependencies and needs no build step.
 
 ```bash
 pip install requests beautifulsoup4
-python scraper/books_scraper.py            # writes books.csv
-python scraper/books_scraper.py --details  # also pulls per-book detail pages
-python scraper/books_scraper.py --limit 3  # just the first 3 pages, for testing
+python scraper/books_scraper.py            # writes books.csv (listing data)
+python scraper/books_scraper.py --details  # also pulls stock counts and descriptions
+python scraper/books_scraper.py --limit 3  # just the first 3 categories, for testing
+python scraper/books_scraper.py --delay 1  # be slower/more polite
+
+# what produced the committed data/books.csv:
+python scraper/books_scraper.py --details --output data/books.csv
 ```
 
 **2. Create the table** — run `supabase/schema.sql` in Supabase's SQL Editor
@@ -124,6 +137,13 @@ python supabase/upload.py --dry-run           # parse and validate, upload nothi
 
 ```bash
 open index.html
+```
+
+To exercise the CSV fallback you need to serve the folder rather than opening the
+file directly — browsers block `file://` pages from reading local files:
+
+```bash
+python3 -m http.server      # then open http://localhost:8000/
 ```
 
 To point it at your own Supabase project, edit `SUPABASE_URL` and `SUPABASE_KEY`
@@ -173,17 +193,15 @@ browser a key that can't do damage."
 
 **Incomplete features**
 
-- **The committed code can't reproduce the live database.** The live Supabase table
-  has `category` and `num_available` columns, and the explorer filters on both — but
-  `schema.sql` doesn't define them, `data/books.csv` doesn't contain them, and
-  `books_scraper.py` never captures `category` at all (it appears only in the sidebar
-  navigation, not on the product card). So cloning this repo and following the setup
-  steps produces a narrower table than the explorer expects, and those two filters
-  come up empty. Realigning the scraper, the CSV and the schema with the live table is
-  the main outstanding task.
-- **`--details` data is only partly stored.** The scraper can pull UPC, product type,
-  tax, stock count and description, but `upload.py` sends only the six listing
-  columns, so UPC, product type, tax and description never reach the database.
+- **UPC, product type, tax and description are scraped but not stored.** `--details`
+  collects them, but the table has no columns for them and `upload.py` doesn't send
+  them, so they exist only in a `--details` run's own CSV.
+- **The offline fallback is a snapshot, not a mirror.** It reflects the data at the
+  time of the last scrape (see each row's `scraped_at` in the live table), so if the
+  live table is updated and the CSV isn't re-committed, the two drift apart.
+- **`description` contains the site's truncated preview followed by the full text.**
+  books.toscrape.com puts both in the same element; the scraper doesn't separate them.
+  It doesn't affect the database, which doesn't store descriptions.
 - **The explorer loads the whole table at once** (up to 2,000 rows) and filters in the
   browser. That is fine for 1,000 books and would need real server-side pagination for
   a larger table.
@@ -191,14 +209,16 @@ browser a key that can't do damage."
   with JavaScript return nothing useful, since there's no browser engine involved.
 - **No scheduled refresh.** The upsert makes re-running safe, but nothing runs it
   automatically.
-- The setup notes inside `upload.py` still refer to the files by their old names
-  (`supabase_schema.sql`, `supabase_upload.py`).
 
 **Assistance**
 
 - **Claude** (Anthropic) was used while building this project — for working through
   the scraping approach, the upsert/`on_conflict` pattern, debugging the encoding of
-  the `£` prices, and reviewing this documentation.
+  the `£` prices, and reviewing this documentation. In a later session it also made
+  the following changes, which are Claude's work rather than mine: switching the
+  scraper to crawl by category so rows carry a `category`, adding the `--delay`
+  option, adding `category` and `num_available` to `schema.sql` and `upload.py`,
+  regenerating `data/books.csv`, and adding the CSV fallback in `index.html`.
 - **Data source:** books.toscrape.com, a sandbox site provided for scraping practice.
 - **External services:** [Supabase](https://supabase.com) for hosted Postgres and its
   REST API.

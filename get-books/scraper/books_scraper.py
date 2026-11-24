@@ -2,21 +2,28 @@
 """
 Scraper for https://books.toscrape.com/
 
-Crawls all 50 catalogue pages and writes one CSV row per book, with:
-    title, price_gbp, availability, rating (1-5), detail_url, image_url, upc,
-    product_type, tax_gbp, num_available, description
+Crawls the site one category at a time and writes one CSV row per book, with:
+    title, category, price_gbp, availability, rating (1-5), detail_url,
+    image_url, upc, product_type, tax_gbp, num_available, description
 
-By default it scrapes just the listing pages (fast: ~1000 books, 50 requests).
+Crawling by category (rather than the flat catalogue) means every row knows
+which category it belongs to, which the Supabase table and the web explorer
+both filter on. It costs no extra requests: the 1,000 books are spread over
+the same number of listing pages either way.
+
+By default it scrapes just the listing pages (fast: ~1000 books, ~70 requests).
 Pass --details to ALSO open each book's own page and pull the richer fields
 (UPC, tax, stock count, description) -- that's ~1000 extra requests, so it's
-slower and off by default.
+slower and off by default. The `num_available` column that the explorer's
+"minimum stock" filter uses only comes from those detail pages, so use
+--details when you want to reproduce the full table.
 
 Usage
 -----
     pip install requests beautifulsoup4
     python books_scraper.py                      # listing data only -> books.csv
     python books_scraper.py --details            # include per-book detail pages
-    python books_scraper.py --output mybooks.csv --limit 3   # first 3 pages only
+    python books_scraper.py --output mybooks.csv --limit 3   # first 3 categories
 
 books.toscrape.com is a sandbox site built specifically for practising
 scraping, so this is safe and intended to be crawled.
@@ -34,7 +41,7 @@ import requests
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://books.toscrape.com/"
-REQUEST_DELAY = 0.5          # polite pause between requests (seconds)
+REQUEST_DELAY = 0.5          # default polite pause between requests (seconds)
 TIMEOUT = 20
 
 HEADERS = {
@@ -49,7 +56,7 @@ HEADERS = {
 RATING_WORDS = {"One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5}
 
 LISTING_COLUMNS = [
-    "title", "price_gbp", "availability", "rating",
+    "title", "category", "price_gbp", "availability", "rating",
     "detail_url", "image_url",
 ]
 DETAIL_COLUMNS = [
@@ -77,6 +84,22 @@ def fetch(session: requests.Session, url: str, retries: int = 3) -> str | None:
     return None
 
 
+def parse_categories(html: str, page_url: str) -> list[tuple[str, str]]:
+    """Read the sidebar and return [(category name, category URL), ...].
+
+    The sidebar's outer <li> is the "Books" root; the real categories are the
+    nested ones, so only those are returned.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    out = []
+    for a in soup.select("div.side_categories ul li ul li a"):
+        name = a.get_text(strip=True)
+        href = a.get("href")
+        if name and href:
+            out.append((name, urljoin(page_url, href)))
+    return out
+
+
 def parse_rating(pod) -> int | None:
     """Pull the 1-5 star rating out of the <p class='star-rating Xxx'> class."""
     p = pod.select_one("p.star-rating")
@@ -93,8 +116,8 @@ def parse_price(text: str) -> str:
     return text.replace("£", "").replace("Â", "").strip()
 
 
-def parse_listing(html: str, page_url: str) -> list[dict]:
-    """Extract every book on one catalogue page into a list of row dicts."""
+def parse_listing(html: str, page_url: str, category: str) -> list[dict]:
+    """Extract every book on one listing page into a list of row dicts."""
     soup = BeautifulSoup(html, "html.parser")
     rows = []
     for pod in soup.select("article.product_pod"):
@@ -111,6 +134,7 @@ def parse_listing(html: str, page_url: str) -> list[dict]:
             # from the link's title attribute when present.
             "title": (title_a.get("title") or title_a.get_text(strip=True))
                      if title_a else "",
+            "category": category,
             "price_gbp": parse_price(price_el.get_text(strip=True)) if price_el else "",
             "availability": avail_el.get_text(strip=True) if avail_el else "",
             "rating": parse_rating(pod) or "",
@@ -146,42 +170,60 @@ def parse_detail(html: str) -> dict:
     return data
 
 
-def scrape(output_file: str, with_details: bool, page_limit: int | None) -> int:
-    session = requests.Session()
-    session.headers.update(HEADERS)
-
-    columns = LISTING_COLUMNS + (DETAIL_COLUMNS if with_details else [])
-    all_rows: list[dict] = []
-
-    url: str | None = BASE_URL
+def crawl_category(session: requests.Session, name: str, url: str,
+                   delay: float = REQUEST_DELAY) -> list[dict]:
+    """Walk every listing page of one category, following its 'next' links."""
+    rows: list[dict] = []
     page = 0
     while url:
         page += 1
-        if page_limit and page > page_limit:
-            break
-        print(f"[page {page}] {url}")
         html = fetch(session, url)
         if html is None:
             break
+        rows.extend(parse_listing(html, url, name))
 
-        rows = parse_listing(html, url)
-        print(f"         +{len(rows)} books (total {len(all_rows) + len(rows)})")
-
-        if with_details:
-            for row in rows:
-                time.sleep(REQUEST_DELAY)
-                dhtml = fetch(session, row["detail_url"])
-                row.update(parse_detail(dhtml) if dhtml
-                           else {c: "" for c in DETAIL_COLUMNS})
-
-        all_rows.extend(rows)
-
-        # Find the "next" link; it's relative to the current page URL.
         soup = BeautifulSoup(html, "html.parser")
         nxt = soup.select_one("li.next a")
         url = urljoin(url, nxt["href"]) if nxt and nxt.has_attr("href") else None
         if url:
-            time.sleep(REQUEST_DELAY)
+            time.sleep(delay)
+    return rows
+
+
+def scrape(output_file: str, with_details: bool, category_limit: int | None,
+           delay: float = REQUEST_DELAY) -> int:
+    session = requests.Session()
+    session.headers.update(HEADERS)
+
+    columns = LISTING_COLUMNS + (DETAIL_COLUMNS if with_details else [])
+
+    home = fetch(session, BASE_URL)
+    if home is None:
+        print("Could not load the site's home page.")
+        return 0
+
+    categories = parse_categories(home, BASE_URL)
+    if category_limit:
+        categories = categories[:category_limit]
+    print(f"Found {len(categories)} categories.")
+
+    all_rows: list[dict] = []
+    for i, (name, url) in enumerate(categories, start=1):
+        time.sleep(delay)
+        rows = crawl_category(session, name, url, delay)
+        all_rows.extend(rows)
+        print(f"[{i}/{len(categories)}] {name}: +{len(rows)} "
+              f"(total {len(all_rows)})")
+
+    if with_details:
+        print(f"\nFetching {len(all_rows)} detail pages (this is the slow part)...")
+        for n, row in enumerate(all_rows, start=1):
+            time.sleep(delay)
+            dhtml = fetch(session, row["detail_url"])
+            row.update(parse_detail(dhtml) if dhtml
+                       else {c: "" for c in DETAIL_COLUMNS})
+            if n % 100 == 0:
+                print(f"         {n}/{len(all_rows)} detail pages")
 
     if not all_rows:
         print("No books scraped.")
@@ -200,12 +242,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Scrape books.toscrape.com to CSV.")
     ap.add_argument("--output", default="books.csv", help="output CSV path")
     ap.add_argument("--details", action="store_true",
-                    help="also crawl each book's detail page (slower)")
+                    help="also crawl each book's detail page (slower; needed "
+                         "for the num_available stock column)")
     ap.add_argument("--limit", type=int, default=None,
-                    help="only scrape the first N catalogue pages")
+                    help="only scrape the first N categories")
+    ap.add_argument("--delay", type=float, default=REQUEST_DELAY,
+                    help=f"seconds to pause between requests "
+                         f"(default {REQUEST_DELAY})")
     args = ap.parse_args()
     try:
-        scrape(args.output, args.details, args.limit)
+        scrape(args.output, args.details, args.limit, args.delay)
     except KeyboardInterrupt:
         print("\nInterrupted.")
         return 130

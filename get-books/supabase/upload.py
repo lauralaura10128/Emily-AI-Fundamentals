@@ -10,7 +10,7 @@ stays current.
 
 SETUP
 -----
-1. Create the table once: run supabase_schema.sql in Supabase's SQL Editor.
+1. Create the table once: run schema.sql in Supabase's SQL Editor.
 
 2. Install the one dependency:
        pip install requests
@@ -34,9 +34,9 @@ SETUP
 
 USAGE
 -----
-    python supabase_upload.py                 # loads books.csv into table "books"
-    python supabase_upload.py --csv other.csv --table my_books
-    python supabase_upload.py --dry-run       # parse + validate, upload nothing
+    python upload.py                 # loads books.csv into table "books"
+    python upload.py --csv other.csv --table my_books
+    python upload.py --dry-run       # parse + validate, upload nothing
 """
 
 from __future__ import annotations
@@ -60,11 +60,15 @@ def load_rows(csv_path: str) -> list[dict]:
         for r in csv.DictReader(fh):
             price = r.get("price_gbp", "").strip()
             rating = r.get("rating", "").strip()
+            stock = r.get("num_available", "").strip()
             rows.append({
                 "title": r.get("title", "").strip(),
+                "category": r.get("category", "").strip() or None,
                 "price_gbp": float(price) if price else None,
                 "availability": r.get("availability", "").strip() or None,
                 "rating": int(rating) if rating.isdigit() else None,
+                # Only present when the scraper ran with --details.
+                "num_available": int(stock) if stock.isdigit() else None,
                 "detail_url": r.get("detail_url", "").strip() or None,
                 "image_url": r.get("image_url", "").strip() or None,
             })

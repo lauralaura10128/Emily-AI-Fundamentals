@@ -227,23 +227,90 @@ const $ = id => document.getElementById(id);
 const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const stars = n => `<span class="f">${"★".repeat(n||0)}</span><span class="e">${"☆".repeat(5-(n||0))}</span>`;
 
+/* Minimal RFC4180 CSV parser: handles quoted fields, embedded commas,
+   doubled quotes and newlines inside quotes. Used only by the fallback. */
+function parseCSV(text){
+  if(text.charCodeAt(0) === 0xFEFF) text = text.slice(1);   // strip BOM
+  const rows=[]; let row=[], field="", q=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(q){
+      if(c === '"'){ if(text[i+1] === '"'){ field+='"'; i++; } else q=false; }
+      else field+=c;
+    }else if(c === '"'){ q=true; }
+    else if(c === ','){ row.push(field); field=""; }
+    else if(c === '\n'){ row.push(field); field=""; rows.push(row); row=[]; }
+    else if(c !== '\r'){ field+=c; }
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  if(!rows.length) return [];
+  const head = rows.shift().map(h=>h.trim());
+  return rows.filter(r=>r.length && r.some(v=>v!==""))
+             .map(r=>Object.fromEntries(head.map((h,i)=>[h, r[i] ?? ""])));
+}
+
+/* The CSV stores everything as text; the UI expects numbers for these. */
+function coerce(rows){
+  return rows.map(b=>({
+    ...b,
+    price_gbp: b.price_gbp === "" ? null : Number(b.price_gbp),
+    rating: b.rating === "" ? null : Number(b.rating),
+    num_available: b.num_available === "" || b.num_available == null
+      ? null : Number(b.num_available),
+  }));
+}
+
+/* Fallback source: the CSV snapshot committed alongside this page. It keeps
+   the explorer usable when the Supabase project is paused or unreachable
+   (the free tier sleeps after a period of inactivity). */
+async function loadFromCSV(){
+  const res = await fetch("data/books.csv", { cache: "no-store" });
+  if(!res.ok) throw new Error("HTTP "+res.status);
+  const rows = coerce(parseCSV(await res.text()));
+  if(!rows.length) throw new Error("the CSV snapshot is empty");
+  return rows;
+}
+
+function showData(sourceLabel, kind){
+  buildCategoryOptions();
+  renderRecs();
+  setStatus(kind, sourceLabel);
+  render();
+}
+
 async function load(){
   setStatus("loading","loading…");
   $("grid").innerHTML = Array.from({length:10},()=>'<div class="sk"><div class="cov"></div></div>').join("");
+  let liveError = null;
   try{
     const url = SUPABASE_URL + "/rest/v1/books?select=*&order=title.asc&limit=2000";
     const res = await fetch(url, { headers:{ apikey:SUPABASE_KEY, Authorization:"Bearer "+SUPABASE_KEY }});
     if(!res.ok) throw new Error("HTTP "+res.status+" "+(await res.text()).slice(0,120));
     ALL = await res.json();
-    buildCategoryOptions();
-    renderRecs();
-    setStatus("ok","live · "+ALL.length+" books");
-    render();
+    if(!ALL.length) throw new Error("the table returned no rows");
+    showData("live · "+ALL.length+" books", "ok");
+    return;
   }catch(e){
-    setStatus("err","error: "+e.message);
+    liveError = e;
+    console.warn("Supabase unavailable, falling back to the CSV snapshot:", e.message);
+  }
+
+  try{
+    ALL = await loadFromCSV();
+    ALL.sort((a,b)=>String(a.title).localeCompare(String(b.title)));
+    showData("offline snapshot · "+ALL.length+" books", "err");
+    $("empty").style.display="none";
+  }catch(csvError){
+    setStatus("err","unavailable");
     $("grid").innerHTML="";
+    $("recsWrap").style.display="none";
     $("empty").style.display="block";
-    $("empty").textContent="Couldn't reach Supabase: "+e.message;
+    $("empty").textContent =
+      "Couldn't reach Supabase (" + liveError.message + ") and couldn't read "
+      + "the local snapshot (" + csvError.message + "). If you opened this file "
+      + "directly, browsers block reading data/books.csv from file:// — serve "
+      + "the folder instead, e.g. python3 -m http.server, then open "
+      + "http://localhost:8000/.";
   }
 }
 
